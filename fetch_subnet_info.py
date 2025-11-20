@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_SUBNET = 79
 DEFAULT_ORDER = "stake:desc"
+DEFAULT_TOP_INCENTIVES = 7
 
 # Matches the metric card: label "Active Miners" with info button, then value <p>
 _ACTIVE_MINERS_CARD_RE = re.compile(
@@ -90,13 +91,55 @@ def _browser_headers() -> dict[str, str]:
     }
 
 
+def _incentive_column_index(page) -> int:
+    """METADATA table (``table`` 0) repeats column headers; locate Incentive column."""
+
+    header_table = page.locator("table").nth(0)
+    count = header_table.locator("thead th").count()
+    for i in range(count):
+        if "Incentive" in header_table.locator("thead th").nth(i).inner_text():
+            return i
+    raise ValueError("Could not find Incentive column in table header")
+
+
+def sort_metagraph_by_incentive_desc(page, *, wait_ms: float = 2_500) -> None:
+    """Apply client-side sort by Incentive (Taostats redirects ``order=incentive:desc`` URL)."""
+
+    idx = _incentive_column_index(page)
+    header_cell = page.locator("table").nth(0).locator("thead th").nth(idx)
+    header_cell.click()
+    page.wait_for_timeout(float(wait_ms))
+
+
+def parse_top_incentive_cell_texts(page, n: int) -> list[str]:
+    """Read the first ``n`` incentive values from the body table (second ``table``)."""
+
+    if n <= 0:
+        return []
+
+    col_idx = _incentive_column_index(page)
+    body_table = page.locator("table").nth(1)
+    rows = body_table.locator("tbody tr")
+    row_count = rows.count()
+    out: list[str] = []
+    for r in range(min(n, row_count)):
+        raw = rows.nth(r).locator("td").nth(col_idx).inner_text().strip()
+        collapsed = re.sub(r"\s+", "", raw)
+        out.append(collapsed)
+    if len(out) < n:
+        raise ValueError(f"Metagraph has only {len(out)} row(s); needed {n}")
+    return out
+
+
 def fetch_metrics_playwright(
     url: str,
     subnet: int,
     *,
     timeout_ms: float = 60_000,
-) -> tuple[int, str]:
-    """Load ``url``, return (active_miners_count, emissions_display_percent)."""
+    top_incentives: int = DEFAULT_TOP_INCENTIVES,
+    settle_ms: float = 750,
+) -> tuple[int, str, list[str]]:
+    """Load metagraph at ``url``, then read top Incentive values after one header click (desc)."""
 
     if sync_playwright is None:
         raise RuntimeError(
@@ -106,17 +149,23 @@ def fetch_metrics_playwright(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
+            context = browser.new_context(viewport={"width": 1600, "height": 1200})
+            page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=float(timeout_ms))
-            page.wait_for_timeout(750)
+            page.wait_for_timeout(max(float(settle_ms), 2_000))
             title = page.title()
             html = page.content()
+
+            top_vals: list[str] = []
+            if top_incentives > 0:
+                sort_metagraph_by_incentive_desc(page)
+                top_vals = parse_top_incentive_cell_texts(page, top_incentives)
         finally:
             browser.close()
 
     miners = parse_active_miners(html)
     emissions = parse_emissions_pct_from_title(title, expected_netuid=subnet)
-    return miners, emissions
+    return miners, emissions, top_vals
 
 
 def fetch_active_miners_requests_only(url: str, *, timeout: float = 45.0) -> int:
@@ -128,8 +177,8 @@ def fetch_active_miners_requests_only(url: str, *, timeout: float = 45.0) -> int
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Print Active Miners and Emissions % from Taostats subnet metagraph URL "
-            "(default: one Playwright load)."
+            "Print Active Miners, Emissions %, and top Incentive column values from Taostats "
+            "metagraph (Playwright; sorts by Incentive via one header click)."
         ),
     )
     parser.add_argument(
@@ -153,6 +202,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use HTTP only for Active Miners (no Playwright); cannot fetch Emissions",
     )
+    parser.add_argument(
+        "--top-incentives",
+        type=int,
+        default=DEFAULT_TOP_INCENTIVES,
+        metavar="N",
+        help=(
+            f"After loading the metagraph, sort by Incentive once and print the first N cell values. "
+            f"Use 0 to skip (default: {DEFAULT_TOP_INCENTIVES})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     url = args.url or metagraph_url(args.subnet, args.order)
@@ -162,9 +221,15 @@ def main(argv: list[str] | None = None) -> int:
             miners = fetch_active_miners_requests_only(url)
             print(miners)
         else:
-            miners, emissions = fetch_metrics_playwright(url, args.subnet)
+            miners, emissions, incentives = fetch_metrics_playwright(
+                url,
+                args.subnet,
+                top_incentives=args.top_incentives,
+            )
             print(miners)
             print(emissions)
+            for v in incentives:
+                print(v)
     except (
         requests.RequestException,
         PlaywrightError,
