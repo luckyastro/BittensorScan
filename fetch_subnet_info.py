@@ -131,6 +131,32 @@ def parse_top_incentive_cell_texts(page, n: int) -> list[str]:
     return out
 
 
+def fetch_metrics_on_playwright_page(
+    page,
+    url: str,
+    subnet: int,
+    *,
+    timeout_ms: float = 60_000,
+    top_incentives: int = DEFAULT_TOP_INCENTIVES,
+    settle_ms: float = 750,
+) -> tuple[int, str, list[str]]:
+    """Load ``url`` on an existing Playwright ``page``, return miners, emissions, top incentives."""
+
+    page.goto(url, wait_until="domcontentloaded", timeout=float(timeout_ms))
+    page.wait_for_timeout(max(float(settle_ms), 2_000))
+    title = page.title()
+    html = page.content()
+
+    top_vals: list[str] = []
+    if top_incentives > 0:
+        sort_metagraph_by_incentive_desc(page)
+        top_vals = parse_top_incentive_cell_texts(page, top_incentives)
+
+    miners = parse_active_miners(html)
+    emissions = parse_emissions_pct_from_title(title, expected_netuid=subnet)
+    return miners, emissions, top_vals
+
+
 def fetch_metrics_playwright(
     url: str,
     subnet: int,
@@ -139,7 +165,7 @@ def fetch_metrics_playwright(
     top_incentives: int = DEFAULT_TOP_INCENTIVES,
     settle_ms: float = 750,
 ) -> tuple[int, str, list[str]]:
-    """Load metagraph at ``url``, then read top Incentive values after one header click (desc)."""
+    """Open a browser tab, load metagraph at ``url``, read metrics (same as single-run CLI)."""
 
     if sync_playwright is None:
         raise RuntimeError(
@@ -151,21 +177,16 @@ def fetch_metrics_playwright(
         try:
             context = browser.new_context(viewport={"width": 1600, "height": 1200})
             page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=float(timeout_ms))
-            page.wait_for_timeout(max(float(settle_ms), 2_000))
-            title = page.title()
-            html = page.content()
-
-            top_vals: list[str] = []
-            if top_incentives > 0:
-                sort_metagraph_by_incentive_desc(page)
-                top_vals = parse_top_incentive_cell_texts(page, top_incentives)
+            return fetch_metrics_on_playwright_page(
+                page,
+                url,
+                subnet,
+                timeout_ms=timeout_ms,
+                top_incentives=top_incentives,
+                settle_ms=settle_ms,
+            )
         finally:
             browser.close()
-
-    miners = parse_active_miners(html)
-    emissions = parse_emissions_pct_from_title(title, expected_netuid=subnet)
-    return miners, emissions, top_vals
 
 
 def fetch_active_miners_requests_only(url: str, *, timeout: float = 45.0) -> int:
@@ -181,16 +202,38 @@ def main(argv: list[str] | None = None) -> int:
             "metagraph (Playwright; sorts by Incentive via one header click)."
         ),
     )
+    rng = parser.add_argument_group(
+        "range",
+        "Fetch contiguous netuids (reuse one browser session). Omit to use --subnet only.",
+    )
+    rng.add_argument(
+        "--start",
+        type=int,
+        default=None,
+        metavar="NETUID",
+        help="Inclusive start netuid (use with --end)",
+    )
+    rng.add_argument(
+        "--end",
+        type=int,
+        default=None,
+        metavar="NETUID",
+        help="Inclusive end netuid (use with --start)",
+    )
     parser.add_argument(
         "--subnet",
         type=int,
         default=DEFAULT_SUBNET,
-        help=f"Subnet netuid (default: {DEFAULT_SUBNET})",
+        help=f"Subnet netuid when not using --start/--end (default: {DEFAULT_SUBNET})",
     )
     parser.add_argument(
         "--order",
         default=DEFAULT_ORDER,
-        help=f"Metagraph sort order query param (default: {DEFAULT_ORDER!r})",
+        metavar="FIELD:dir",
+        help=(
+            "Metagraph sort query param embedded in URLs (see Taostats `?order=`). "
+            f"Default: {DEFAULT_ORDER!r}. Example: incentive:desc"
+        ),
     )
     parser.add_argument(
         "--url",
@@ -214,22 +257,89 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    url = args.url or metagraph_url(args.subnet, args.order)
+    if args.start is not None or args.end is not None:
+        if args.url is not None:
+            parser.error("--url cannot be used with --start/--end")
+        if args.start is None or args.end is None:
+            parser.error("--start and --end must be supplied together")
+        if args.end < args.start:
+            parser.error("--end must be >= --start")
+
+    def print_subnet_block(subnet_id: int, miners: int, emissions: str, incentives: list[str]) -> None:
+        print(f"=== SN{subnet_id} ===")
+        print(miners)
+        print(emissions)
+        for v in incentives:
+            print(v)
 
     try:
         if args.requests_active_miners_only:
+            if args.start is not None:
+                seen_err: BaseException | None = None
+                for netuid in range(args.start, args.end + 1):
+                    url = metagraph_url(netuid, args.order)
+                    try:
+                        miners = fetch_active_miners_requests_only(url)
+                        print(f"=== SN{netuid} ===")
+                        print(miners)
+                    except (
+                        requests.RequestException,
+                        ValueError,
+                        RuntimeError,
+                    ) as exc:
+                        seen_err = exc
+                        print(f"=== SN{netuid} ===", file=sys.stderr)
+                        print(f"Error: {exc}", file=sys.stderr)
+                return 1 if seen_err else 0
+            url = args.url or metagraph_url(args.subnet, args.order)
             miners = fetch_active_miners_requests_only(url)
             print(miners)
-        else:
-            miners, emissions, incentives = fetch_metrics_playwright(
-                url,
-                args.subnet,
-                top_incentives=args.top_incentives,
+            return 0
+
+        if sync_playwright is None:
+            raise RuntimeError(
+                "Playwright is not installed; run `pip install playwright && playwright install chromium`",
             )
-            print(miners)
-            print(emissions)
-            for v in incentives:
-                print(v)
+
+        if args.start is not None:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                try:
+                    context = browser.new_context(viewport={"width": 1600, "height": 1200})
+                    page = context.new_page()
+                    last_err: BaseException | None = None
+                    for netuid in range(args.start, args.end + 1):
+                        url = metagraph_url(netuid, args.order)
+                        try:
+                            miners, emissions, incentives = fetch_metrics_on_playwright_page(
+                                page,
+                                url,
+                                netuid,
+                                top_incentives=args.top_incentives,
+                            )
+                            print_subnet_block(netuid, miners, emissions, incentives)
+                        except (
+                            PlaywrightError,
+                            ValueError,
+                            RuntimeError,
+                        ) as exc:
+                            last_err = exc
+                            print(f"=== SN{netuid} ===", file=sys.stderr)
+                            print(f"Error: {exc}", file=sys.stderr)
+                    return 1 if last_err else 0
+                finally:
+                    browser.close()
+
+        url = args.url or metagraph_url(args.subnet, args.order)
+        miners, emissions, incentives = fetch_metrics_playwright(
+            url,
+            args.subnet,
+            top_incentives=args.top_incentives,
+        )
+        print(miners)
+        print(emissions)
+        for v in incentives:
+            print(v)
     except (
         requests.RequestException,
         PlaywrightError,
