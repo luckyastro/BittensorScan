@@ -23,6 +23,27 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+For **Google Sheets export**, you need a Google Cloud **service account** JSON key whose `client_email` has **Editor** access to the spreadsheet. Create the service account in Google Cloud Console, download the JSON, and share the workbook with that email (`…@….iam.gserviceaccount.com`).
+
+### Credentials via `.env` (recommended)
+
+**Do not pass the JSON path on the command line for normal use.** Put it in a **`.env`** file at the project root (the file is listed in `.gitignore`). Before any Sheets API call, **`google_sheet_sync` loads `.env`** into the environment (`python-dotenv`).
+
+```bash
+# .env — path to your service account key file (absolute paths are safest)
+GOOGLE_CREDENTIALS_PATH=/absolute/path/to/service-account.json
+```
+
+The script checks these names in order and uses the first one that is non-empty:
+
+`GOOGLE_CREDENTIALS_PATH` → `GOOGLE_APPLICATION_CREDENTIALS` → `GOOGLE_SERVICE_ACCOUNT_JSON`
+
+You **may** omit `.env** and rely on exporting one of those variables in your shell, but that is secondary to `.env`.
+
+**Optional override:** **`--google-credentials PATH`** forces a particular JSON path for that run only (for debugging or one-off setups). It overrides anything from `.env` / environment.
+
+If the CLI prints **`403` / `permission`**, Google is rejecting access: open the spreadsheet → **Share**, add the **`client_email`** from that JSON key with **Editor**, then retry.
+
 If you see **“Executable doesn’t exist … ms-playwright/chromium_headless_shell-…”**, run `playwright install chromium` again using the **same** environment as `python` (same venv). If `PLAYWRIGHT_BROWSERS_PATH` points at an old or sandbox directory, clear it and reinstall:
 
 ```bash
@@ -85,13 +106,42 @@ Sample output:
 | `--top-incentives N` | After load, sort by Incentive once and print the first **N** values (default `7`; use `0` to skip incentives) |
 | `--url URL` | Full metagraph URL (overrides `--subnet` and `--order`; single-subnet only) |
 | `--requests-active-miners-only` | HTTP (`requests`) only: Active miners. **No** Playwright, **no** emissions or incentive column. Works with `--start` / `--end` (prints `=== SN… ===` and one number per subnet). |
+| `--google-sheet ID_OR_URL` | After a successful fetch, write metrics to the workbook (see below). Spreadsheet URLs are OK. |
+| `--google-credentials PATH` | **Rarely needed.** Overrides the credentials path from **`.env`** / environment for this run only. Prefer `GOOGLE_CREDENTIALS_PATH` in `.env`. |
+| `--sheet-date YYYY-MM-DD` | Calendar day used for ActiveMiners / Emission (**column header is written as ``month/day``**, no year; default: today, local time) |
+
+### Google Sheets layout
+
+Create three worksheets named exactly **`ActiveMiners`**, **`Emission`**, and **`Incentive`** (case-sensitive).
+
+**ActiveMiners** and **Emission** (history by date):
+
+- Column **A**: subnet netuid (one row per subnet).
+- Column **B** onward: one column per run date. The header row uses **month/day with no year** (e.g. `5/10`).  
+  Existing columns that still use legacy **`YYYY-MM-DD`** headers **are reused** when they refer to the same calendar day.
+- If a column for today (or `--sheet-date`) already exists in row 1, the matching subnet row is **updated**; otherwise a **new column** is added using the `month/day` label.
+
+**Incentive** (always current snapshot):
+
+- Column **A**: subnet netuid.
+- Columns **B …** (default **7** incentive cells): the latest top incentives for that subnet. **Every run overwrites** columns B–… for that subnet’s row (nothing is keyed by date).
+
+Example (Playwright run, range 79–81, full metrics — keys come from **`GOOGLE_CREDENTIALS_PATH`** in `.env`, not from CLI flags):
+
+```bash
+python fetch_subnet_info.py --start 79 --end 81 --order incentive:desc \
+  --google-sheet "https://docs.google.com/spreadsheets/d/1k5w51UDIZPms0s1Adriqkfl_vTGODTMH4cLLub5mkhM/edit"
+```
+
+With `--requests-active-miners-only`, only **ActiveMiners** is filled; a short note is printed to stderr for **Emission** / **Incentive**.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `fetch_subnet_info.py` | CLI: fetch metrics as above |
-| `requirements.txt` | `requests`, `playwright` |
+| `fetch_subnet_info.py` | CLI: fetch metrics (and optional Sheets export) |
+| `google_sheet_sync.py` | Service-account writes to Sheets |
+| `requirements.txt` | `requests`, `playwright`, `gspread`, `google-auth`, `python-dotenv` |
 
 ## Notes
 

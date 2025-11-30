@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from datetime import date
 from urllib.parse import quote
 
 import requests
@@ -195,6 +196,13 @@ def fetch_active_miners_requests_only(url: str, *, timeout: float = 45.0) -> int
     return parse_active_miners(response.text)
 
 
+def _parse_sheet_date(raw: str) -> date:
+    try:
+        return date.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid date {raw!r} (expect YYYY-MM-DD)") from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -245,6 +253,39 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use HTTP only for Active Miners (no Playwright); cannot fetch Emissions",
     )
+    gsheet = parser.add_argument_group(
+        "Google Sheets",
+        "Writes to tabs ActiveMiners (wide + dates), Emission (wide + dates), Incentive "
+        "(one row per subnet; columns B onward replaced each run).",
+    )
+    gsheet.add_argument(
+        "--google-sheet",
+        metavar="ID_OR_URL",
+        default=None,
+        help=(
+            "Spreadsheet ID or docs.google.com spreadsheet URL "
+            '(share the sheet with the service account email as "Editor")'
+        ),
+    )
+    gsheet.add_argument(
+        "--google-credentials",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Service account JSON path (overrides .env / GOOGLE_CREDENTIALS_PATH / "
+            "GOOGLE_APPLICATION_CREDENTIALS)"
+        ),
+    )
+    gsheet.add_argument(
+        "--sheet-date",
+        type=_parse_sheet_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "Date column header for ActiveMiners / Emission (default: today "
+            "in local time)."
+        ),
+    )
     parser.add_argument(
         "--top-incentives",
         type=int,
@@ -265,6 +306,49 @@ def main(argv: list[str] | None = None) -> int:
         if args.end < args.start:
             parser.error("--end must be >= --start")
 
+    sheet_day: date = args.sheet_date if args.sheet_date else date.today()
+    synced: list[tuple[int, int | None, str | None, list[str]]] = []
+
+    def emit_sheet_row(
+        netuid: int,
+        miners_val: int | None,
+        emissions_val: str | None,
+        incentives_val: list[str],
+    ) -> None:
+        if args.google_sheet:
+            synced.append((netuid, miners_val, emissions_val, incentives_val))
+
+    def flush_google_sheet() -> None:
+        if not args.google_sheet or not synced:
+            return
+        try:
+            from google_sheet_sync import (
+                sheets_write_user_message,
+                spreadsheet_id_from_input,
+                sync_subnet_batch,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Google Sheets export needs gspread and google-auth "
+                "(install: pip install -r requirements.txt)",
+            ) from exc
+
+        sid = spreadsheet_id_from_input(args.google_sheet)
+        try:
+            sync_subnet_batch(
+                spreadsheet_id=sid,
+                credentials_path=args.google_credentials,
+                day=sheet_day,
+                subnets=synced,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                sheets_write_user_message(
+                    exc,
+                    credentials_path_arg=args.google_credentials,
+                ),
+            ) from exc
+
     def print_subnet_block(subnet_id: int, miners: int, emissions: str, incentives: list[str]) -> None:
         print(f"=== SN{subnet_id} ===")
         print(miners)
@@ -282,6 +366,12 @@ def main(argv: list[str] | None = None) -> int:
                         miners = fetch_active_miners_requests_only(url)
                         print(f"=== SN{netuid} ===")
                         print(miners)
+                        emit_sheet_row(
+                            netuid,
+                            miners_val=miners,
+                            emissions_val=None,
+                            incentives_val=[],
+                        )
                     except (
                         requests.RequestException,
                         ValueError,
@@ -290,10 +380,32 @@ def main(argv: list[str] | None = None) -> int:
                         seen_err = exc
                         print(f"=== SN{netuid} ===", file=sys.stderr)
                         print(f"Error: {exc}", file=sys.stderr)
+
+                flush_google_sheet()
+                if args.google_sheet:
+                    print(
+                        "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
+                        "(Emission / Incentive need Playwright).",
+                        file=sys.stderr,
+                    )
                 return 1 if seen_err else 0
+
             url = args.url or metagraph_url(args.subnet, args.order)
             miners = fetch_active_miners_requests_only(url)
             print(miners)
+            emit_sheet_row(
+                args.subnet,
+                miners_val=miners,
+                emissions_val=None,
+                incentives_val=[],
+            )
+            flush_google_sheet()
+            if args.google_sheet:
+                print(
+                    "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
+                    "(Emission / Incentive need Playwright).",
+                    file=sys.stderr,
+                )
             return 0
 
         if sync_playwright is None:
@@ -317,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
                                 netuid,
                                 top_incentives=args.top_incentives,
                             )
+                            emit_sheet_row(netuid, miners, emissions, incentives)
                             print_subnet_block(netuid, miners, emissions, incentives)
                         except (
                             PlaywrightError,
@@ -326,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
                             last_err = exc
                             print(f"=== SN{netuid} ===", file=sys.stderr)
                             print(f"Error: {exc}", file=sys.stderr)
+                    flush_google_sheet()
                     return 1 if last_err else 0
                 finally:
                     browser.close()
@@ -336,10 +450,12 @@ def main(argv: list[str] | None = None) -> int:
             args.subnet,
             top_incentives=args.top_incentives,
         )
+        emit_sheet_row(args.subnet, miners, emissions, incentives)
         print(miners)
         print(emissions)
         for v in incentives:
             print(v)
+        flush_google_sheet()
     except (
         requests.RequestException,
         PlaywrightError,
