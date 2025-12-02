@@ -263,8 +263,8 @@ def main(argv: list[str] | None = None) -> int:
         metavar="ID_OR_URL",
         default=None,
         help=(
-            "Spreadsheet ID or docs.google.com spreadsheet URL "
-            '(share the sheet with the service account email as "Editor")'
+            "Spreadsheet ID or full Google Sheets URL; optional if ``GOOGLE_SHEET_URL`` or "
+            "``GOOGLE_SPREADSHEET_ID`` is set in ``.env`` (CLI value wins over ``.env``)"
         ),
     )
     gsheet.add_argument(
@@ -306,6 +306,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.end < args.start:
             parser.error("--end must be >= --start")
 
+    from google_sheet_sync import (
+        spreadsheet_id_from_environment,
+        spreadsheet_id_from_input,
+    )
+
+    def resolved_spreadsheet_id(cli: str | None) -> str | None:
+        if cli is not None and str(cli).strip():
+            return spreadsheet_id_from_input(str(cli).strip())
+        return spreadsheet_id_from_environment()
+
+    sheet_spreadsheet_id = resolved_spreadsheet_id(args.google_sheet)
+
     sheet_day: date = args.sheet_date if args.sheet_date else date.today()
     synced: list[tuple[int, int | None, str | None, list[str]]] = []
 
@@ -315,16 +327,15 @@ def main(argv: list[str] | None = None) -> int:
         emissions_val: str | None,
         incentives_val: list[str],
     ) -> None:
-        if args.google_sheet:
+        if sheet_spreadsheet_id:
             synced.append((netuid, miners_val, emissions_val, incentives_val))
 
     def flush_google_sheet() -> None:
-        if not args.google_sheet or not synced:
+        if not sheet_spreadsheet_id or not synced:
             return
         try:
             from google_sheet_sync import (
                 sheets_write_user_message,
-                spreadsheet_id_from_input,
                 sync_subnet_batch,
             )
         except ImportError as exc:
@@ -333,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                 "(install: pip install -r requirements.txt)",
             ) from exc
 
-        sid = spreadsheet_id_from_input(args.google_sheet)
+        sid = sheet_spreadsheet_id
         try:
             sync_subnet_batch(
                 spreadsheet_id=sid,
@@ -382,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"Error: {exc}", file=sys.stderr)
 
                 flush_google_sheet()
-                if args.google_sheet:
+                if sheet_spreadsheet_id:
                     print(
                         "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
                         "(Emission / Incentive need Playwright).",
@@ -400,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                 incentives_val=[],
             )
             flush_google_sheet()
-            if args.google_sheet:
+            if sheet_spreadsheet_id:
                 print(
                     "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
                     "(Emission / Incentive need Playwright).",

@@ -47,6 +47,22 @@ def spreadsheet_id_from_input(value: str) -> str:
     return s
 
 
+def spreadsheet_id_from_environment() -> str | None:
+    """Spreadsheet target from ``.env`` / process environment (loads ``.env`` first)."""
+
+    _load_dotenv()
+    for key in (
+        "GOOGLE_SHEET_URL",
+        "GOOGLE_SPREADSHEET_URL",
+        "GOOGLE_SPREADSHEET_ID",
+        "GOOGLE_SHEET_ID",
+    ):
+        raw = os.environ.get(key)
+        if raw and str(raw).strip():
+            return spreadsheet_id_from_input(str(raw).strip())
+    return None
+
+
 def spreadsheet_client(credentials_path: str | None):
     """Authorized gspread client from a service-account JSON path."""
 
