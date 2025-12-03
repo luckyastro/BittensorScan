@@ -206,8 +206,9 @@ def _parse_sheet_date(raw: str) -> date:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Print Active Miners, Emissions %, and top Incentive column values from Taostats "
-            "metagraph (Playwright; sorts by Incentive via one header click)."
+            "Fetch Active Miners, Emissions %, and top Incentive values from Taostats metagraph "
+            "(Playwright; sorts by Incentive via one header click). "
+            "Stdout is quiet unless --show-output."
         ),
     )
     rng = parser.add_argument_group(
@@ -296,6 +297,14 @@ def main(argv: list[str] | None = None) -> int:
             f"Use 0 to skip (default: {DEFAULT_TOP_INCENTIVES})"
         ),
     )
+    parser.add_argument(
+        "--show-output",
+        action="store_true",
+        help=(
+            "Print fetched metrics and subnet blocks to stdout. "
+            "Default: stdout stays quiet (Sheets/export and stderr still behave as usual)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.start is not None or args.end is not None:
@@ -317,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         return spreadsheet_id_from_environment()
 
     sheet_spreadsheet_id = resolved_spreadsheet_id(args.google_sheet)
+    show_out = args.show_output
 
     sheet_day: date = args.sheet_date if args.sheet_date else date.today()
     synced: list[tuple[int, int | None, str | None, list[str]]] = []
@@ -360,12 +370,16 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             ) from exc
 
+    def out(*objs: object) -> None:
+        if show_out:
+            print(*objs)
+
     def print_subnet_block(subnet_id: int, miners: int, emissions: str, incentives: list[str]) -> None:
-        print(f"=== SN{subnet_id} ===")
-        print(miners)
-        print(emissions)
+        out(f"=== SN{subnet_id} ===")
+        out(miners)
+        out(emissions)
         for v in incentives:
-            print(v)
+            out(v)
 
     try:
         if args.requests_active_miners_only:
@@ -375,8 +389,8 @@ def main(argv: list[str] | None = None) -> int:
                     url = metagraph_url(netuid, args.order)
                     try:
                         miners = fetch_active_miners_requests_only(url)
-                        print(f"=== SN{netuid} ===")
-                        print(miners)
+                        out(f"=== SN{netuid} ===")
+                        out(miners)
                         emit_sheet_row(
                             netuid,
                             miners_val=miners,
@@ -403,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
 
             url = args.url or metagraph_url(args.subnet, args.order)
             miners = fetch_active_miners_requests_only(url)
-            print(miners)
+            out(miners)
             emit_sheet_row(
                 args.subnet,
                 miners_val=miners,
@@ -462,10 +476,10 @@ def main(argv: list[str] | None = None) -> int:
             top_incentives=args.top_incentives,
         )
         emit_sheet_row(args.subnet, miners, emissions, incentives)
-        print(miners)
-        print(emissions)
+        out(miners)
+        out(emissions)
         for v in incentives:
-            print(v)
+            out(v)
         flush_google_sheet()
     except (
         requests.RequestException,

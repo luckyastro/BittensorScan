@@ -67,11 +67,15 @@ playwright install chromium
 python fetch_subnet_info.py
 ```
 
-Prints (example shape):
+By default **nothing is written to stdout** (quiet mode for cron/automation); Google Sheets updates still occur when configured via `.env`.
 
-1. Active miners (integer)
-2. Emissions (string, e.g. `1.27%`)
-3. Seven lines of Incentive cell text (default)
+To **print** metrics:
+
+```bash
+python fetch_subnet_info.py --show-output
+```
+
+That prints (example shape): active miners → emissions (% string) → `N` incentive lines (`--top-incentives`, default seven).
 
 ### Custom subnet and sort param
 
@@ -87,7 +91,7 @@ python fetch_subnet_info.py --subnet 79 --order incentive:desc
 
 ### Range of netuids (inclusive)
 
-Uses **one** browser session and visits each metagraph in turn. Output is grouped with a header per netuid:
+Uses **one** browser session and visits each netuid in turn. Grouped **`=== SN… ===` blocks appear on stdout only with** **`--show-output`** (otherwise stdout stays quiet).
 
 ```bash
 python fetch_subnet_info.py --start 79 --end 81 --order incentive:desc
@@ -113,7 +117,8 @@ Sample output:
 |------|--------|
 | `--top-incentives N` | After load, sort by Incentive once and print the first **N** values (default `7`; use `0` to skip incentives) |
 | `--url URL` | Full metagraph URL (overrides `--subnet` and `--order`; single-subnet only) |
-| `--requests-active-miners-only` | HTTP (`requests`) only: Active miners. **No** Playwright, **no** emissions or incentive column. Works with `--start` / `--end` (prints `=== SN… ===` and one number per subnet). |
+| `--show-output` | Print subnet blocks and numbers to **stdout** (default: **off**). Errors and Google Sheets notes still use **stderr**. |
+| `--requests-active-miners-only` | HTTP (`requests`) only: Active miners. **No** Playwright, **no** emissions or incentive column. Works with `--start` / `--end` (stdout lines only when `--show-output` is set). |
 | `--google-sheet ID_OR_URL` | **Optional if** ``GOOGLE_SHEET_URL`` / ``GOOGLE_SPREADSHEET_ID`` (etc.) is set in **``.env``**. After a successful fetch, write metrics to that workbook (CLI value overrides ``.env``). |
 | `--google-credentials PATH` | **Rarely needed.** Overrides the credentials path from **`.env`** / environment for this run only. Prefer `GOOGLE_CREDENTIALS_PATH` in `.env`. |
 | `--sheet-date YYYY-MM-DD` | Calendar day used for ActiveMiners / Emission (**column header is written as ``month/day``**, no year; default: today, local time) |
@@ -140,7 +145,7 @@ Example (Playwright run, range 79–81, full metrics — with **`GOOGLE_CREDENTI
 python fetch_subnet_info.py --start 79 --end 81 --order incentive:desc
 ```
 
-To point at a different spreadsheet for one run only, pass **`--google-sheet …`** (overrides `.env`).
+Add **`--show-output`** to print the same results to the terminal. To point at a different spreadsheet for one run only, pass **`--google-sheet …`** (overrides `.env`).
 
 With `--requests-active-miners-only`, only **ActiveMiners** is filled; a short note is printed to stderr for **Emission** / **Incentive**.
 
