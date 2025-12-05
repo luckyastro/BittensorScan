@@ -6,7 +6,9 @@ Main entrypoint: **`fetch_subnet_info.py`** — collects, per subnet netuid:
 
 - **Active miners** (from SSR HTML metagraph cards)
 - **Emissions** as a percentage (from the document title after JavaScript runs: leading fraction × 100, e.g. `0.0126` → `1.26%`)
-- **Top N Incentive** values from the metagraph table (after one click on the Incentive column header so rows are sorted by incentive descending; the `?order=incentive:desc` query alone is not reliable on Taostats)
+- **Top N Incentive** values from the metagraph table (after one click on the Incentive column header so rows are sorted by incentive descending; Taostats does not honor `?order=incentive:desc` alone, so the script still applies that click)
+
+Every built metagraph URL uses **`?order=incentive%3Adesc`** (no CLI override). If you pass **`--url`**, the same `order` is applied for **taostats.io** metagraph paths.
 
 ## Requirements
 
@@ -77,16 +79,10 @@ python fetch_subnet_info.py --show-output
 
 That prints (example shape): active miners → emissions (% string) → `N` incentive lines (`--top-incentives`, default seven).
 
-### Custom subnet and sort param
+### Custom subnet
 
 ```bash
-python fetch_subnet_info.py --subnet 80 --order stake:desc
-```
-
-`--order` is passed into the metagraph URL as `?order=…` (URL-encoded). Example matching Taostats links:
-
-```bash
-python fetch_subnet_info.py --subnet 79 --order incentive:desc
+python fetch_subnet_info.py --subnet 80
 ```
 
 ### Range of netuids (inclusive)
@@ -94,7 +90,7 @@ python fetch_subnet_info.py --subnet 79 --order incentive:desc
 Uses **one** browser session and visits each netuid in turn. Grouped **`=== SN… ===` blocks appear on stdout only with** **`--show-output`** (otherwise stdout stays quiet).
 
 ```bash
-python fetch_subnet_info.py --start 79 --end 81 --order incentive:desc
+python fetch_subnet_info.py --start 79 --end 81
 ```
 
 Sample output:
@@ -116,7 +112,7 @@ Sample output:
 | Flag | Meaning |
 |------|--------|
 | `--top-incentives N` | After load, sort by Incentive once and print the first **N** values (default `7`; use `0` to skip incentives) |
-| `--url URL` | Full metagraph URL (overrides `--subnet` and `--order`; single-subnet only) |
+| `--url URL` | Full **taostats.io** metagraph URL (overrides `--subnet`; `order=incentive:desc` is forced on that URL) |
 | `--show-output` | Print subnet blocks and numbers to **stdout** (default: **off**). Errors and Google Sheets notes still use **stderr**. |
 | `--requests-active-miners-only` | HTTP (`requests`) only: Active miners. **No** Playwright, **no** emissions or incentive column. Works with `--start` / `--end` (stdout lines only when `--show-output` is set). |
 | `--google-sheet ID_OR_URL` | **Optional if** ``GOOGLE_SHEET_URL`` / ``GOOGLE_SPREADSHEET_ID`` (etc.) is set in **``.env``**. After a successful fetch, write metrics to that workbook (CLI value overrides ``.env``). |
@@ -142,7 +138,7 @@ Create three worksheets named exactly **`ActiveMiners`**, **`Emission`**, and **
 Example (Playwright run, range 79–81, full metrics — with **`GOOGLE_CREDENTIALS_PATH`** and **`GOOGLE_SHEET_URL`** in `.env`, no Sheets flags needed):
 
 ```bash
-python fetch_subnet_info.py --start 79 --end 81 --order incentive:desc
+python fetch_subnet_info.py --start 79 --end 81
 ```
 
 Add **`--show-output`** to print the same results to the terminal. To point at a different spreadsheet for one run only, pass **`--google-sheet …`** (overrides `.env`).

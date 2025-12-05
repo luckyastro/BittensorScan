@@ -12,7 +12,7 @@ import argparse
 import re
 import sys
 from datetime import date
-from urllib.parse import quote
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -25,7 +25,10 @@ except ImportError:  # pragma: no cover
 
 
 DEFAULT_SUBNET = 79
-DEFAULT_ORDER = "stake:desc"
+
+# Built metagraph URLs and taostats --url normalization always use this sort.
+METAGRAPH_ORDER = "incentive:desc"
+
 DEFAULT_TOP_INCENTIVES = 7
 
 # Matches the metric card: label "Active Miners" with info button, then value <p>
@@ -42,9 +45,31 @@ _TITLE_SN_PREFIX_RE = re.compile(
 )
 
 
-def metagraph_url(subnet: int, order: str) -> str:
-    order_q = quote(order, safe="")
-    return f"https://taostats.io/subnets/{subnet}/metagraph?order={order_q}"
+def metagraph_url(subnet: int) -> str:
+    """Taostats metagraph URL with ``order=incentive:desc`` (URL-encoded ``:``)."""
+
+    base = f"https://taostats.io/subnets/{subnet}/metagraph"
+    return base + "?" + urlencode({"order": METAGRAPH_ORDER})
+
+
+def apply_metagraph_sort_order(url: str) -> str:
+    """For Taostats metagraph pages, set ``order=incentive:desc`` (other URLs unchanged)."""
+
+    u = urlparse(url.strip())
+    if u.netloc != "taostats.io" or "/metagraph" not in u.path:
+        return url.strip()
+    qs = dict(parse_qsl(u.query, keep_blank_values=True))
+    qs["order"] = METAGRAPH_ORDER
+    return urlunparse(
+        (
+            u.scheme,
+            u.netloc,
+            u.path,
+            u.params,
+            urlencode(qs),
+            u.fragment,
+        ),
+    )
 
 
 def parse_active_miners(html: str) -> int:
@@ -236,18 +261,12 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Subnet netuid when not using --start/--end (default: {DEFAULT_SUBNET})",
     )
     parser.add_argument(
-        "--order",
-        default=DEFAULT_ORDER,
-        metavar="FIELD:dir",
-        help=(
-            "Metagraph sort query param embedded in URLs (see Taostats `?order=`). "
-            f"Default: {DEFAULT_ORDER!r}. Example: incentive:desc"
-        ),
-    )
-    parser.add_argument(
         "--url",
         default=None,
-        help="Full metagraph URL (overrides --subnet and --order if set)",
+        help=(
+            "Full Taostats metagraph URL (overrides --subnet); "
+            "`order` is normalized to incentive:desc for taostats.io metagraph pages"
+        ),
     )
     parser.add_argument(
         "--requests-active-miners-only",
@@ -386,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.start is not None:
                 seen_err: BaseException | None = None
                 for netuid in range(args.start, args.end + 1):
-                    url = metagraph_url(netuid, args.order)
+                    url = metagraph_url(netuid)
                     try:
                         miners = fetch_active_miners_requests_only(url)
                         out(f"=== SN{netuid} ===")
@@ -415,7 +434,11 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 return 1 if seen_err else 0
 
-            url = args.url or metagraph_url(args.subnet, args.order)
+            url = (
+                apply_metagraph_sort_order(args.url)
+                if args.url
+                else metagraph_url(args.subnet)
+            )
             miners = fetch_active_miners_requests_only(url)
             out(miners)
             emit_sheet_row(
@@ -446,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
                     page = context.new_page()
                     last_err: BaseException | None = None
                     for netuid in range(args.start, args.end + 1):
-                        url = metagraph_url(netuid, args.order)
+                        url = metagraph_url(netuid)
                         try:
                             miners, emissions, incentives = fetch_metrics_on_playwright_page(
                                 page,
@@ -469,7 +492,11 @@ def main(argv: list[str] | None = None) -> int:
                 finally:
                     browser.close()
 
-        url = args.url or metagraph_url(args.subnet, args.order)
+        url = (
+            apply_metagraph_sort_order(args.url)
+            if args.url
+            else metagraph_url(args.subnet)
+        )
         miners, emissions, incentives = fetch_metrics_playwright(
             url,
             args.subnet,
