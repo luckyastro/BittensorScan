@@ -8,6 +8,8 @@ Main entrypoint: **`fetch_subnet_info.py`** — collects, per subnet netuid:
 - **Emissions** as a percentage (from the document title after JavaScript runs: leading fraction × 100, e.g. `0.0126` → `1.26%`)
 - **Top N Incentive** values from the metagraph table (after one click on the Incentive column header so rows are sorted by incentive descending; Taostats does not honor `?order=incentive:desc` alone, so the script still applies that click)
 
+When **Google Sheets** is configured, the script **reads the workbook first** for the target date column (today or `--sheet-date`) and **skips Taostats** for subnets that are already filled (see [Sheets-first skipping](#sheets-first-skipping) below). Use **`--force-fetch`** to ignore that check and always scrape.
+
 Every built metagraph URL uses **`?order=incentive%3Adesc`** (no CLI override). If you pass **`--url`**, the same `order` is applied for **taostats.io** metagraph paths.
 
 ## Requirements
@@ -118,6 +120,18 @@ Sample output:
 | `--google-sheet ID_OR_URL` | **Optional if** ``GOOGLE_SHEET_URL`` / ``GOOGLE_SPREADSHEET_ID`` (etc.) is set in **``.env``**. After a successful fetch, write metrics to that workbook (CLI value overrides ``.env``). |
 | `--google-credentials PATH` | **Rarely needed.** Overrides the credentials path from **`.env`** / environment for this run only. Prefer `GOOGLE_CREDENTIALS_PATH` in `.env`. |
 | `--sheet-date YYYY-MM-DD` | Calendar day used for ActiveMiners / Emission (**column header is written as ``month/day``**, no year; default: today, local time) |
+| `--force-fetch` | When Sheets is configured, **do not** skip Taostats for subnets that already have today’s cells filled; always fetch and write. |
+
+### Sheets-first skipping
+
+If a spreadsheet is resolved (via `.env` and/or `--google-sheet`), the script opens it **read-only** and looks up the column for **today** (or `--sheet-date`).
+
+- **Full Playwright run** (default, no `--requests-active-miners-only`): a subnet is skipped only when **both** **ActiveMiners** and **Emission** cells for that date are **non-blank**. Skipped subnets are not opened in the browser; Taostats is not called for them.
+- **`--requests-active-miners-only`**: only **ActiveMiners** is considered; **Emission** is not required to skip. (This mode does not fetch emissions from the web.)
+
+If **no** spreadsheet is configured, or read fails before the gate runs, behavior is unchanged: every subnet in scope is fetched.
+
+Together with Sheets export, this makes **hourly cron** reasonable: reruns refill blanks and refresh incentives without hammering Taostats for subnets that already have today’s miner and emission values.
 
 ### Google Sheets layout
 
@@ -144,6 +158,16 @@ python fetch_subnet_info.py --start 79 --end 81
 Add **`--show-output`** to print the same results to the terminal. To point at a different spreadsheet for one run only, pass **`--google-sheet …`** (overrides `.env`).
 
 With `--requests-active-miners-only`, only **ActiveMiners** is filled; a short note is printed to stderr for **Emission** / **Incentive**.
+
+### Cron (hourly example)
+
+Runs at **minute 0** every hour. Replace the **`cd`** path and **`--start` / `--end`** range with yours. Activate the same venv you use locally so `python` and Playwright’s Chromium layout match.
+
+```cron
+0 * * * * cd /path/to/BittensorScan && . .venv/bin/activate && python fetch_subnet_info.py --start 1 --end 128
+```
+
+With `.env` pointing at credentials and the workbook, subnets that already have **both** ActiveMiners and Emission for today are skipped on Taostats until a new day’s column applies (or you use **`--force-fetch`**). Redirect **stdout/stderr** to a log file if you want a paper trail (`>> /var/log/bittensorscan.log 2>&1`).
 
 ## Files
 

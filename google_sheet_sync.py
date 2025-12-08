@@ -204,6 +204,88 @@ def sheet_date_header(day: date) -> str:
     return f"{day.month}/{day.day}"
 
 
+def date_column_index_readonly(ws: Any, day: date) -> int | None:
+    """1-based column index for ``day`` in row 1, or ``None`` if that header does not exist yet."""
+
+    hdr = ws.row_values(1)
+    if not hdr:
+        return None
+    for idx, cell in enumerate(hdr):
+        if _header_matches_calendar_day(str(cell), day):
+            return idx + 1
+    return None
+
+
+def _cell_is_blank(ws: Any, row: int | None, col: int | None) -> bool:
+    if row is None or col is None:
+        return True
+    val = ws.cell(row, col).value
+    return val is None or str(val).strip() == ""
+
+
+def subnet_has_complete_wide_metrics_for_day(
+    *,
+    ws_miners: Any,
+    ws_emission: Any,
+    subnet: int,
+    day: date,
+    require_emission: bool,
+) -> bool:
+    """
+    Whether Taostats can be skipped for ``subnet``: ActiveMiners date cell filled;
+    optionally Emission date cell too.
+    """
+
+    col_m = date_column_index_readonly(ws_miners, day)
+    row_m = _subnet_data_row(ws_miners, subnet)
+    if _cell_is_blank(ws_miners, row_m, col_m):
+        return False
+
+    if not require_emission:
+        return True
+
+    col_e = date_column_index_readonly(ws_emission, day)
+    row_e = _subnet_data_row(ws_emission, subnet)
+    return not _cell_is_blank(ws_emission, row_e, col_e)
+
+
+def netuids_needing_taostats_fetch(
+    *,
+    spreadsheet_id: str,
+    credentials_path: str | None,
+    day: date,
+    netuids: Iterable[int],
+    require_emission: bool,
+) -> list[int]:
+    """
+    Compare **ActiveMiners** / optionally **Emission** vs ``day`` columns (read-only; no mutations).
+
+    If both required cells exist and are non-blank for a netuid, that netuid is **omitted** from
+    the result so Taostats is not queried again until a new calendar day adds a new column.
+
+    Opening the workbook triggers one round-trip each run; callers should batch netuids once.
+    """
+
+    client = spreadsheet_client(credentials_path)
+    workbook = client.open_by_key(spreadsheet_id)
+    ws_miners = _open_worksheet(workbook, "ActiveMiners")
+    ws_emission = _open_worksheet(workbook, "Emission")
+
+    unseen: list[int] = []
+    ordered = sorted({int(u) for u in netuids})
+    for nid in ordered:
+        if subnet_has_complete_wide_metrics_for_day(
+            ws_miners=ws_miners,
+            ws_emission=ws_emission,
+            subnet=nid,
+            day=day,
+            require_emission=require_emission,
+        ):
+            continue
+        unseen.append(nid)
+    return unseen
+
+
 def _header_matches_calendar_day(cell_value: str, day: date) -> bool:
     """True if ``cell_value`` denotes the same calendar day as ``day``."""
 

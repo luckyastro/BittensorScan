@@ -233,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Fetch Active Miners, Emissions %, and top Incentive values from Taostats metagraph "
             "(Playwright; sorts by Incentive via one header click). "
+            "When Google Sheets is configured, reads the sheet first and skips subnets that "
+            "already have both metrics for today's date column (--force-fetch bypasses). "
             "Stdout is quiet unless --show-output."
         ),
     )
@@ -276,7 +278,10 @@ def main(argv: list[str] | None = None) -> int:
     gsheet = parser.add_argument_group(
         "Google Sheets",
         "Writes to tabs ActiveMiners (wide + dates), Emission (wide + dates), Incentive "
-        "(one row per subnet; columns B onward replaced each run).",
+        "(one row per subnet; columns B onward replaced each run). "
+        "If a spreadsheet URL/ID is configured, the sheet is read **before** Taostats: "
+        "for each subnet, ActiveMiners and Emission cells for (~sheet-date) must both be "
+        "non-empty to skip scraping (requests-only mode checks ActiveMiners only).",
     )
     gsheet.add_argument(
         "--google-sheet",
@@ -304,6 +309,13 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Date column header for ActiveMiners / Emission (default: today "
             "in local time)."
+        ),
+    )
+    gsheet.add_argument(
+        "--force-fetch",
+        action="store_true",
+        help=(
+            "Always query Taostats for every subnet (skip the Google Sheets skip-if-complete check)."
         ),
     )
     parser.add_argument(
@@ -335,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--end must be >= --start")
 
     from google_sheet_sync import (
+        netuids_needing_taostats_fetch,
         spreadsheet_id_from_environment,
         spreadsheet_id_from_input,
     )
@@ -349,6 +362,19 @@ def main(argv: list[str] | None = None) -> int:
 
     sheet_day: date = args.sheet_date if args.sheet_date else date.today()
     synced: list[tuple[int, int | None, str | None, list[str]]] = []
+
+    def netuids_after_sheet_gate(full: list[int], *, require_emission: bool) -> list[int]:
+        """Subtract subnets whose sheet rows already look filled for ``sheet_day``."""
+
+        if not sheet_spreadsheet_id or args.force_fetch:
+            return list(full)
+        return netuids_needing_taostats_fetch(
+            spreadsheet_id=sheet_spreadsheet_id,
+            credentials_path=args.google_credentials,
+            day=sheet_day,
+            netuids=full,
+            require_emission=require_emission,
+        )
 
     def emit_sheet_row(
         netuid: int,
@@ -403,8 +429,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.requests_active_miners_only:
             if args.start is not None:
+                planned = list(range(args.start, args.end + 1))
+                todo = netuids_after_sheet_gate(planned, require_emission=False)
+                if not todo:
+                    print(
+                        f"Sheets: ActiveMiners already filled for "
+                        f"{sheet_day.isoformat()} for netuids "
+                        f"{planned[0]}–{planned[-1]}; skipping Taostats.",
+                        file=sys.stderr,
+                    )
+                    return 0
                 seen_err: BaseException | None = None
-                for netuid in range(args.start, args.end + 1):
+                for netuid in todo:
                     url = metagraph_url(netuid)
                     try:
                         miners = fetch_active_miners_requests_only(url)
@@ -439,6 +475,14 @@ def main(argv: list[str] | None = None) -> int:
                 if args.url
                 else metagraph_url(args.subnet)
             )
+            if not netuids_after_sheet_gate([args.subnet], require_emission=False):
+                print(
+                    f"Sheets: subnet {args.subnet} ActiveMiners already has data for "
+                    f"{sheet_day.isoformat()}; skipping Taostats.",
+                    file=sys.stderr,
+                )
+                return 0
+
             miners = fetch_active_miners_requests_only(url)
             out(miners)
             emit_sheet_row(
@@ -462,13 +506,23 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.start is not None:
+            planned = list(range(args.start, args.end + 1))
+            todo_pw = netuids_after_sheet_gate(planned, require_emission=True)
+            if not todo_pw:
+                print(
+                    f"Sheets: ActiveMiners and Emission already filled for "
+                    f"{sheet_day.isoformat()} for netuids {planned[0]}–{planned[-1]}; "
+                    "skipping Taostats.",
+                    file=sys.stderr,
+                )
+                return 0
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 try:
                     context = browser.new_context(viewport={"width": 1600, "height": 1200})
                     page = context.new_page()
                     last_err: BaseException | None = None
-                    for netuid in range(args.start, args.end + 1):
+                    for netuid in todo_pw:
                         url = metagraph_url(netuid)
                         try:
                             miners, emissions, incentives = fetch_metrics_on_playwright_page(
@@ -497,6 +551,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.url
             else metagraph_url(args.subnet)
         )
+        if not netuids_after_sheet_gate([args.subnet], require_emission=True):
+            print(
+                f"Sheets: subnet {args.subnet} already has ActiveMiners and Emission for "
+                f"{sheet_day.isoformat()}; skipping Taostats.",
+                file=sys.stderr,
+            )
+            return 0
         miners, emissions, incentives = fetch_metrics_playwright(
             url,
             args.subnet,
