@@ -415,6 +415,78 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             ) from exc
 
+    def open_sheet_tabs_range_mode() -> tuple | None:
+        """Open workbook once for ``--start``/``--end`` so each subnet writes right after stdout."""
+
+        if not sheet_spreadsheet_id:
+            return None
+        try:
+            from google_sheet_sync import (  # pylint: disable=import-outside-toplevel
+                open_sheet_tabs_for_writes,
+                sheets_write_user_message,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Google Sheets export needs gspread and google-auth "
+                "(install: pip install -r requirements.txt)",
+            ) from exc
+
+        try:
+            return open_sheet_tabs_for_writes(
+                spreadsheet_id=sheet_spreadsheet_id,
+                credentials_path=args.google_credentials,
+                day=sheet_day,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                sheets_write_user_message(
+                    exc,
+                    credentials_path_arg=args.google_credentials,
+                ),
+            ) from exc
+
+    def sheets_push_one_subnet_incremental(
+        tabs_or_none: tuple | None,
+        netuid: int,
+        miners_val: int | None,
+        emissions_val: str | None,
+        incentives_val: list[str],
+    ) -> None:
+        """Write one subnet to already-open worksheets (range mode); no-op without tabs."""
+
+        if tabs_or_none is None:
+            return
+        wm, we, wi, ad = tabs_or_none
+        try:
+            from google_sheet_sync import (  # pylint: disable=import-outside-toplevel
+                sheets_write_user_message,
+                sync_subnet_row_to_open_tabs,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Google Sheets export needs gspread and google-auth "
+                "(install: pip install -r requirements.txt)",
+            ) from exc
+
+        try:
+            sync_subnet_row_to_open_tabs(
+                wm,
+                we,
+                wi,
+                ad,
+                netuid=netuid,
+                miners=miners_val,
+                emission=emissions_val,
+                incentives=incentives_val,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                sheets_write_user_message(
+                    exc,
+                    credentials_path_arg=args.google_credentials,
+                ),
+            ) from exc
+
     def out(*objs: object) -> None:
         if show_out:
             print(*objs)
@@ -439,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 0
+                range_sheet_tabs = open_sheet_tabs_range_mode()
                 seen_err: BaseException | None = None
                 for netuid in todo:
                     url = metagraph_url(netuid)
@@ -446,7 +519,9 @@ def main(argv: list[str] | None = None) -> int:
                         miners = fetch_active_miners_requests_only(url)
                         out(f"=== SN{netuid} ===")
                         out(miners)
-                        emit_sheet_row(
+                        sys.stdout.flush()
+                        sheets_push_one_subnet_incremental(
+                            range_sheet_tabs,
                             netuid,
                             miners_val=miners,
                             emissions_val=None,
@@ -460,8 +535,6 @@ def main(argv: list[str] | None = None) -> int:
                         seen_err = exc
                         print(f"=== SN{netuid} ===", file=sys.stderr)
                         print(f"Error: {exc}", file=sys.stderr)
-
-                flush_google_sheet()
                 if sheet_spreadsheet_id:
                     print(
                         "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
@@ -516,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 0
+            range_sheet_tabs = open_sheet_tabs_range_mode()
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 try:
@@ -531,8 +605,15 @@ def main(argv: list[str] | None = None) -> int:
                                 netuid,
                                 top_incentives=args.top_incentives,
                             )
-                            emit_sheet_row(netuid, miners, emissions, incentives)
                             print_subnet_block(netuid, miners, emissions, incentives)
+                            sys.stdout.flush()
+                            sheets_push_one_subnet_incremental(
+                                range_sheet_tabs,
+                                netuid,
+                                miners_val=miners,
+                                emissions_val=emissions,
+                                incentives_val=incentives,
+                            )
                         except (
                             PlaywrightError,
                             ValueError,
@@ -541,7 +622,6 @@ def main(argv: list[str] | None = None) -> int:
                             last_err = exc
                             print(f"=== SN{netuid} ===", file=sys.stderr)
                             print(f"Error: {exc}", file=sys.stderr)
-                    flush_google_sheet()
                     return 1 if last_err else 0
                 finally:
                     browser.close()

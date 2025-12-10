@@ -204,16 +204,22 @@ def sheet_date_header(day: date) -> str:
     return f"{day.month}/{day.day}"
 
 
-def date_column_index_readonly(ws: Any, day: date) -> int | None:
-    """1-based column index for ``day`` in row 1, or ``None`` if that header does not exist yet."""
+def date_column_index_from_header_row(hdr: list[Any], day: date) -> int | None:
+    """1-based column index for ``day`` from row 1 cell values."""
 
-    hdr = ws.row_values(1)
     if not hdr:
         return None
     for idx, cell in enumerate(hdr):
         if _header_matches_calendar_day(str(cell), day):
             return idx + 1
     return None
+
+
+def date_column_index_readonly(ws: Any, day: date) -> int | None:
+    """1-based column index for ``day`` in row 1, or ``None`` if that header does not exist yet."""
+
+    hdr = ws.row_values(1)
+    return date_column_index_from_header_row(hdr, day)
 
 
 def _cell_is_blank(ws: Any, row: int | None, col: int | None) -> bool:
@@ -223,30 +229,26 @@ def _cell_is_blank(ws: Any, row: int | None, col: int | None) -> bool:
     return val is None or str(val).strip() == ""
 
 
-def subnet_has_complete_wide_metrics_for_day(
-    *,
-    ws_miners: Any,
-    ws_emission: Any,
-    subnet: int,
-    day: date,
-    require_emission: bool,
-) -> bool:
-    """
-    Whether Taostats can be skipped for ``subnet``: ActiveMiners date cell filled;
-    optionally Emission date cell too.
-    """
+def _first_data_row_subnet_col_a(col_a_values: list[Any], subnet: int) -> int | None:
+    """Lowest 1-based row whose column A equals ``subnet`` (skip row 1; mirrors ``findall`` + row ≥ 2)."""
 
-    col_m = date_column_index_readonly(ws_miners, day)
-    row_m = _subnet_data_row(ws_miners, subnet)
-    if _cell_is_blank(ws_miners, row_m, col_m):
+    s = str(subnet)
+    for i in range(1, len(col_a_values)):  # index 0 is row 1
+        if str(col_a_values[i]).strip() == s:
+            return i + 1
+    return None
+
+
+def _draft_col_value_nonblank(col_snapshot: list[Any], row_1_based: int | None) -> bool:
+    """True if row exists in ``col_snapshot`` (trimmed gspread list) and trimmed cell text is non-empty."""
+
+    if row_1_based is None:
         return False
-
-    if not require_emission:
-        return True
-
-    col_e = date_column_index_readonly(ws_emission, day)
-    row_e = _subnet_data_row(ws_emission, subnet)
-    return not _cell_is_blank(ws_emission, row_e, col_e)
+    idx = row_1_based - 1
+    if idx < 0 or idx >= len(col_snapshot):
+        return False
+    v = col_snapshot[idx]
+    return v is not None and str(v).strip() != ""
 
 
 def netuids_needing_taostats_fetch(
@@ -263,7 +265,8 @@ def netuids_needing_taostats_fetch(
     If both required cells exist and are non-blank for a netuid, that netuid is **omitted** from
     the result so Taostats is not queried again until a new calendar day adds a new column.
 
-    Opening the workbook triggers one round-trip each run; callers should batch netuids once.
+    Uses a bounded number of Sheets **read** requests (row 1 + column A + date column per tab),
+    not per-netuid reads, to stay under API rate limits for large ``--start/--end`` ranges.
     """
 
     client = spreadsheet_client(credentials_path)
@@ -271,18 +274,36 @@ def netuids_needing_taostats_fetch(
     ws_miners = _open_worksheet(workbook, "ActiveMiners")
     ws_emission = _open_worksheet(workbook, "Emission")
 
-    unseen: list[int] = []
     ordered = sorted({int(u) for u in netuids})
+    hdr_m = ws_miners.row_values(1)
+    col_m = date_column_index_from_header_row(hdr_m, day)
+    if col_m is None:
+        return ordered
+
+    col_a_miners = ws_miners.col_values(1)
+    col_dates_miners = ws_miners.col_values(col_m)
+
+    col_a_emission: list[Any] | None = None
+    col_dates_emission: list[Any] | None = None
+    if require_emission:
+        hdr_e = ws_emission.row_values(1)
+        col_e = date_column_index_from_header_row(hdr_e, day)
+        if col_e is None:
+            return ordered
+        col_a_emission = ws_emission.col_values(1)
+        col_dates_emission = ws_emission.col_values(col_e)
+
+    unseen: list[int] = []
     for nid in ordered:
-        if subnet_has_complete_wide_metrics_for_day(
-            ws_miners=ws_miners,
-            ws_emission=ws_emission,
-            subnet=nid,
-            day=day,
-            require_emission=require_emission,
-        ):
+        row_m = _first_data_row_subnet_col_a(col_a_miners, nid)
+        if not _draft_col_value_nonblank(col_dates_miners, row_m):
+            unseen.append(nid)
             continue
-        unseen.append(nid)
+        if require_emission and col_a_emission is not None and col_dates_emission is not None:
+            row_e = _first_data_row_subnet_col_a(col_a_emission, nid)
+            if not _draft_col_value_nonblank(col_dates_emission, row_e):
+                unseen.append(nid)
+
     return unseen
 
 
@@ -412,6 +433,44 @@ def _open_worksheet(workbook: Any, title: str) -> Any:
         ) from exc
 
 
+def open_sheet_tabs_for_writes(
+    *,
+    spreadsheet_id: str,
+    credentials_path: str | None,
+    day: date | None,
+) -> tuple[Any, Any, Any, date]:
+    """Return ``(ActiveMiners, Emission, Incentive worksheets, anchor_day)`` — one workbook open."""
+
+    anchor_day = day or date.today()
+    client = spreadsheet_client(credentials_path)
+    workbook = client.open_by_key(spreadsheet_id)
+    ws_miners = _open_worksheet(workbook, "ActiveMiners")
+    ws_emission = _open_worksheet(workbook, "Emission")
+    ws_incentive = _open_worksheet(workbook, "Incentive")
+    return ws_miners, ws_emission, ws_incentive, anchor_day
+
+
+def sync_subnet_row_to_open_tabs(
+    ws_miners: Any,
+    ws_emission: Any,
+    ws_incentive: Any,
+    anchor_day: date,
+    *,
+    netuid: int,
+    miners: int | None,
+    emission: str | None,
+    incentives: list[str],
+) -> None:
+    """Write one subnet to the already-open workbook tabs."""
+
+    if miners is not None:
+        _upsert_wide_metric(ws_miners, subnet=netuid, day=anchor_day, value=miners)
+    if emission is not None:
+        _upsert_wide_metric(ws_emission, subnet=netuid, day=anchor_day, value=emission)
+    if incentives:
+        _replace_incentive_row(ws_incentive, subnet=netuid, incentive_values=incentives)
+
+
 def sync_subnet_batch(
     *,
     spreadsheet_id: str,
@@ -425,18 +484,19 @@ def sync_subnet_batch(
     Each item is ``(netuid, active_miners | None, emission_label | None, incentive_strings)``
     """
 
-    anchor_day = day or date.today()
-    client = spreadsheet_client(credentials_path)
-    workbook = client.open_by_key(spreadsheet_id)
-
-    ws_miners = _open_worksheet(workbook, "ActiveMiners")
-    ws_emission = _open_worksheet(workbook, "Emission")
-    ws_incentive = _open_worksheet(workbook, "Incentive")
-
+    ws_miners, ws_emission, ws_incentive, anchor_day = open_sheet_tabs_for_writes(
+        spreadsheet_id=spreadsheet_id,
+        credentials_path=credentials_path,
+        day=day,
+    )
     for netuid, miners, emission, incentives in subnets:
-        if miners is not None:
-            _upsert_wide_metric(ws_miners, subnet=netuid, day=anchor_day, value=miners)
-        if emission is not None:
-            _upsert_wide_metric(ws_emission, subnet=netuid, day=anchor_day, value=emission)
-        if incentives:
-            _replace_incentive_row(ws_incentive, subnet=netuid, incentive_values=incentives)
+        sync_subnet_row_to_open_tabs(
+            ws_miners,
+            ws_emission,
+            ws_incentive,
+            anchor_day,
+            netuid=netuid,
+            miners=miners,
+            emission=emission,
+            incentives=incentives,
+        )

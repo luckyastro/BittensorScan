@@ -89,7 +89,7 @@ python fetch_subnet_info.py --subnet 80
 
 ### Range of netuids (inclusive)
 
-Uses **one** browser session and visits each netuid in turn. Grouped **`=== SN… ===` blocks appear on stdout only with** **`--show-output`** (otherwise stdout stays quiet).
+Uses **one** browser session and visits each netuid in turn. Grouped **`=== SN… ===` blocks appear on stdout only with** **`--show-output`** (otherwise stdout stays quiet). With Google Sheets configured, **range mode writes each subnet as soon as that fetch succeeds** (stdout for that subnet is flushed first), not after the whole batch.
 
 ```bash
 python fetch_subnet_info.py --start 79 --end 81
