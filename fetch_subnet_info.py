@@ -278,7 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     gsheet = parser.add_argument_group(
         "Google Sheets",
         "Writes to tabs ActiveMiners (wide + dates), Emission (wide + dates), Incentive "
-        "(one row per subnet; columns B onward replaced each run). "
+        "(one row per subnet: subnet_id, Emission %, Active Miners, top incentives "
+        "in D onward; overwritten each run). "
         "If a spreadsheet URL/ID is configured, the sheet is read **before** Taostats: "
         "for each subnet, ActiveMiners and Emission cells for (~sheet-date) must both be "
         "non-empty to skip scraping (requests-only mode checks ActiveMiners only).",
@@ -537,8 +538,8 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"Error: {exc}", file=sys.stderr)
                 if sheet_spreadsheet_id:
                     print(
-                        "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
-                        "(Emission / Incentive need Playwright).",
+                        "Google Sheets: dated ActiveMiners only from HTTP — Emission snapshot "
+                        "and top incentives require Playwright; Incentive-tab B/D+ left blank.",
                         file=sys.stderr,
                     )
                 return 1 if seen_err else 0
@@ -567,8 +568,8 @@ def main(argv: list[str] | None = None) -> int:
             flush_google_sheet()
             if sheet_spreadsheet_id:
                 print(
-                    "Google Sheets: ActiveMiners only in --requests-active-miners-only mode "
-                    "(Emission / Incentive need Playwright).",
+                    "Google Sheets: dated ActiveMiners only from HTTP — Emission snapshot "
+                    "and top incentives require Playwright; Incentive-tab B/D+ left blank.",
                     file=sys.stderr,
                 )
             return 0

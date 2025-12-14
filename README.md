@@ -144,10 +144,14 @@ Create three worksheets named exactly **`ActiveMiners`**, **`Emission`**, and **
   Existing columns that still use legacy **`YYYY-MM-DD`** headers **are reused** when they refer to the same calendar day.
 - If a column for today (or `--sheet-date`) already exists in row 1, the matching subnet row is **updated**; otherwise a **new column** is added using the `month/day` label.
 
-**Incentive** (always current snapshot):
+**Incentive** (one row per subnet — **today’s combined snapshot**, not keyed by date):
 
-- Column **A**: subnet netuid.
-- Columns **B …** (default **7** incentive cells): the latest top incentives for that subnet. **Every run overwrites** columns B–… for that subnet’s row (nothing is keyed by date).
+- **A** (`subnet_id`): subnet netuid.  
+- **B** (**Emission**): emissions `%` string from Taostats (empty when not fetched).  
+- **C** (**Active Miners**): miner count (empty when not fetched).  
+- **D onward** (`Incentive1`, `Incentive2`, … — default width matches `--top-incentives`, usually **7**): top incentive cell values after the once-per-page sort.
+
+**Every run overwrites** that subnet’s row in this tab. With **`--requests-active-miners-only`**, column **C** is filled and **B** / incentive columns stay empty unless you also use Playwright for full metrics.
 
 Example (Playwright run, range 79–81, full metrics — with **`GOOGLE_CREDENTIALS_PATH`** and **`GOOGLE_SHEET_URL`** in `.env`, no Sheets flags needed):
 
@@ -157,7 +161,7 @@ python fetch_subnet_info.py --start 79 --end 81
 
 Add **`--show-output`** to print the same results to the terminal. To point at a different spreadsheet for one run only, pass **`--google-sheet …`** (overrides `.env`).
 
-With `--requests-active-miners-only`, only **ActiveMiners** is filled; a short note is printed to stderr for **Emission** / **Incentive**.
+With `--requests-active-miners-only`, the dated **ActiveMiners** sheet is filled; **Emission** is not scraped. On the snapshot **Incentive** tab you still get **subnet_id**, **Active Miners** (**C**), with **Emission** and incentive columns blank.
 
 ### Cron (hourly example)
 

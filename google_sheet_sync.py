@@ -1,4 +1,4 @@
-"""Push subnet metrics into Google Sheets tabs: ActiveMiners, Emission, Incentive."""
+"""Push subnet metrics into Google Sheets: ActiveMiners, Emission (dated wide), Incentive snapshot row."""
 
 from __future__ import annotations
 
@@ -387,38 +387,52 @@ def _upsert_wide_metric(
     )
 
 
-def _ensure_incentive_sheet_header(ws: Any, n_cols: int) -> None:
-    row1 = ws.row_values(1)
-    if (
-        row1
-        and str(row1[0]).strip().lower() == "subnet"
-        and len(row1) >= 1 + n_cols
-    ):
-        return
+def _expected_incentive_snapshot_header(n_incentive_cols: int) -> list[str]:
+    """Row 1 for **Incentive** tab: subnet_id, Emission, Active Miners, then top-N incentive columns."""
 
-    hdr = [["Subnet"] + [f"Incentive{k}" for k in range(1, n_cols + 1)]]
-    end_cell = _rowcol_a1(1, 1 + n_cols)
-    ws.update(_rowcol_a1(1, 1) + ":" + end_cell, hdr, value_input_option="USER_ENTERED")
+    base = ["subnet_id", "Emission", "Active Miners"]
+    return base + [f"Incentive{k}" for k in range(1, n_incentive_cols + 1)]
 
 
-def _replace_incentive_row(
+def _ensure_incentive_snapshot_header(ws: Any, n_incentive_cols: int) -> None:
+    expected = _expected_incentive_snapshot_header(n_incentive_cols)
+    row1 = ws.row_values(1) or []
+    cur = [str(row1[i]).strip() if i < len(row1) else "" for i in range(len(expected))]
+    exp = [str(x).strip() for x in expected]
+    if cur != exp:
+        end_cell = _rowcol_a1(1, len(expected))
+        ws.update(
+            _rowcol_a1(1, 1) + ":" + end_cell,
+            [expected],
+            value_input_option="USER_ENTERED",
+        )
+
+
+def _replace_incentive_snapshot_row(
     ws: Any,
     *,
     subnet: int,
+    emission: str | None,
+    miners: int | None,
     incentive_values: list[str],
 ) -> None:
-    n = len(incentive_values)
-    if not n:
-        return
+    """
+    One row per subnet: today's snapshot (emission %, active miners, top incentives).
+    Empty strings for metrics we did not fetch (e.g. HTTP-only mode has no emission).
+    """
 
-    _ensure_incentive_sheet_header(ws, n)
+    n = len(incentive_values)
+    _ensure_incentive_snapshot_header(ws, n)
     row = _subnet_data_row(ws, subnet)
     if row is None:
         row = _append_row(ws)
 
-    end_col = 1 + n
+    b_val = "" if emission is None else str(emission)
+    c_val = "" if miners is None else miners
+    row_vals: list[Any] = [subnet, b_val, c_val] + list(incentive_values[:n])
+    end_col = 3 + n
     rng = _rowcol_a1(row, 1) + ":" + _rowcol_a1(row, end_col)
-    ws.update(rng, [[subnet] + incentive_values[:n]], value_input_option="USER_ENTERED")
+    ws.update(rng, [row_vals], value_input_option="USER_ENTERED")
 
 
 def _open_worksheet(workbook: Any, title: str) -> Any:
@@ -467,8 +481,14 @@ def sync_subnet_row_to_open_tabs(
         _upsert_wide_metric(ws_miners, subnet=netuid, day=anchor_day, value=miners)
     if emission is not None:
         _upsert_wide_metric(ws_emission, subnet=netuid, day=anchor_day, value=emission)
-    if incentives:
-        _replace_incentive_row(ws_incentive, subnet=netuid, incentive_values=incentives)
+    if miners is not None or emission is not None or incentives:
+        _replace_incentive_snapshot_row(
+            ws_incentive,
+            subnet=netuid,
+            emission=emission,
+            miners=miners,
+            incentive_values=incentives,
+        )
 
 
 def sync_subnet_batch(
